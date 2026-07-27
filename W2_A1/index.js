@@ -8,11 +8,13 @@ const PORT = 3000;
 app.use(express.json());
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-let tasks = [
+const INITIAL_TASKS = [
   { id: 1, title: "Buy groceries", done: false },
   { id: 2, title: "Read a book", done: true },
   { id: 3, title: "Complete coding assignment", done: false }
 ];
+
+let tasks = INITIAL_TASKS.map(t => ({ ...t }));
 
 app.get('/', (req, res) => {
   res.json({ name: "Task API", version: "1.0", endpoints: ["/tasks"] });
@@ -23,7 +25,32 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/tasks', (req, res) => {
-  res.json(tasks);
+  let filteredTasks = [...tasks];
+
+  // Done filtering
+  if (req.query.done !== undefined) {
+    const isDone = req.query.done === 'true';
+    filteredTasks = filteredTasks.filter(t => t.done === isDone);
+  }
+
+  // Search filtering
+  if (req.query.search !== undefined) {
+    const queryStr = req.query.search.toLowerCase();
+    filteredTasks = filteredTasks.filter(t => t.title.toLowerCase().includes(queryStr));
+  }
+
+  // Pagination (limit and offset)
+  const limit = parseInt(req.query.limit, 10);
+  const offset = parseInt(req.query.offset, 10);
+
+  if (!isNaN(offset)) {
+    filteredTasks = filteredTasks.slice(offset);
+  }
+  if (!isNaN(limit)) {
+    filteredTasks = filteredTasks.slice(0, limit);
+  }
+
+  res.json(filteredTasks);
 });
 
 app.get('/tasks/:id', (req, res) => {
@@ -92,6 +119,18 @@ app.delete('/tasks/:id', (req, res) => {
 
   tasks.splice(taskIndex, 1);
   res.status(204).send();
+});
+
+app.get('/stats', (req, res) => {
+  const total = tasks.length;
+  const done = tasks.filter(t => t.done).length;
+  const open = total - done;
+  res.json({ total, done, open });
+});
+
+app.post('/reset', (req, res) => {
+  tasks = INITIAL_TASKS.map(t => ({ ...t }));
+  res.json({ message: "Database reset to initial tasks." });
 });
 
 app.listen(PORT, () => {
