@@ -14,9 +14,25 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// Create table and indexes, and seed initial tasks inside a transaction
 async function initializeDatabase() {
-  const client = await pool.connect();
+  const maxRetries = 10;
+  let retries = 0;
+  let client;
+
+  while (retries < maxRetries) {
+    try {
+      client = await pool.connect();
+      break;
+    } catch (err) {
+      retries++;
+      console.log(`Database connection attempt ${retries} failed. Retrying in 2 seconds...`);
+      if (retries >= maxRetries) {
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+
   try {
     await client.query('BEGIN');
 
@@ -45,10 +61,14 @@ async function initializeDatabase() {
     await client.query('COMMIT');
     console.log("Database initialized and seeded successfully.");
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK');
+    }
     throw err;
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 }
 

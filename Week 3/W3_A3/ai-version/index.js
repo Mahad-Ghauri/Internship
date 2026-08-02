@@ -1,120 +1,104 @@
 const express = require('express');
-const Database = require('better-sqlite3');
-const path = require('path');
+const { Pool } = require('pg');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// SQLite setup
-const db = new Database(path.join(__dirname, 'tasks.db'));
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
 
-// Create table if missing
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    done INTEGER DEFAULT 0
-  )
-`);
-
-// Seed initial tasks if empty
-const count = db.prepare('SELECT COUNT(*) as count FROM tasks').get().count;
-if (count === 0) {
-  const insert = db.prepare('INSERT INTO tasks (title, done) VALUES (?, ?)');
-  insert.run("Buy groceries", 0);
-  insert.run("Read a book", 1);
-  insert.run("Complete coding assignment", 0);
-}
-
-// Endpoints
-app.get('/tasks', (req, res) => {
+// Initialize database
+async function initDb() {
   try {
-    let rows = db.prepare('SELECT * FROM tasks').all();
-    
-    // JS filtering instead of SQL filtering
-    let results = rows.map(r => ({ id: r.id, title: r.title, done: !!r.done }));
-    
-    if (req.query.done !== undefined) {
-      const isDone = req.query.done === 'true';
-      results = results.filter(t => t.done === isDone);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        done BOOLEAN DEFAULT FALSE
+      )
+    `);
+    const res = await pool.query('SELECT COUNT(*) FROM tasks');
+    if (parseInt(res.rows[0].count, 10) === 0) {
+      await pool.query('INSERT INTO tasks (title, done) VALUES ($1, $2)', ['Buy groceries', false]);
+      await pool.query('INSERT INTO tasks (title, done) VALUES ($1, $2)', ['Read a book', true]);
+      await pool.query('INSERT INTO tasks (title, done) VALUES ($1, $2)', ['Complete coding assignment', false]);
     }
-    if (req.query.search !== undefined) {
-      const searchStr = req.query.search.toLowerCase();
-      results = results.filter(t => t.title.toLowerCase().includes(searchStr));
-    }
-    
-    res.json(results);
+    console.log('Database initialized');
+  } catch (err) {
+    console.error('Failed to init DB', err);
+  }
+}
+initDb();
+
+app.get('/tasks', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM tasks');
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/tasks/:id', (req, res) => {
-  const id = parseInt(req.params.id);
+app.get('/tasks/:id', async (req, res) => {
   try {
-    const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-    if (!row) {
+    const result = await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    res.json({ id: row.id, title: row.title, done: !!row.done });
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/tasks', (req, res) => {
+app.post('/tasks', async (req, res) => {
   const { title } = req.body;
   if (!title || typeof title !== 'string' || title.trim() === '') {
     return res.status(400).json({ error: 'Title is required' });
   }
   try {
-    const info = db.prepare('INSERT INTO tasks (title, done) VALUES (?, 0)').run(title.trim());
-    res.status(201).json({ id: info.lastInsertRowid, title: title.trim(), done: false });
+    const result = await pool.query('INSERT INTO tasks (title) VALUES ($1) RETURNING *', [title]);
+    res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.put('/tasks/:id', (req, res) => {
-  const id = parseInt(req.params.id);
+app.put('/tasks/:id', async (req, res) => {
   const { title, done } = req.body;
-  
-  if (title === undefined && done === undefined) {
-    return res.status(400).json({ error: 'Title or done status required' });
-  }
-  
   try {
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-    if (!task) {
+    const check = await pool.query('SELECT * FROM tasks WHERE id = $1', [req.params.id]);
+    if (check.rows.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    
-    const nextTitle = title !== undefined ? title.trim() : task.title;
-    const nextDone = done !== undefined ? (done ? 1 : 0) : task.done;
-    
-    db.prepare('UPDATE tasks SET title = ?, done = ? WHERE id = ?').run(nextTitle, nextDone, id);
-    res.json({ id, title: nextTitle, done: nextDone === 1 });
+    const current = check.rows[0];
+    const finalTitle = title !== undefined ? title : current.title;
+    const finalDone = done !== undefined ? done : current.done;
+    const result = await pool.query(
+      'UPDATE tasks SET title = $1, done = $2 WHERE id = $3 RETURNING *',
+      [finalTitle, finalDone, req.params.id]
+    );
+    res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/tasks/:id', (req, res) => {
-  const id = parseInt(req.params.id);
+app.delete('/tasks/:id', async (req, res) => {
   try {
-    const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-    if (!task) {
+    const result = await pool.query('DELETE FROM tasks WHERE id = $1', [req.params.id]);
+    if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Task not found' });
     }
-    db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-    res.status(204).end();
+    res.status(204).send();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`AI version running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

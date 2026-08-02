@@ -1,119 +1,117 @@
-# Task CRUD API with SQLite (FlyRank Internship - Week 3 - Assignment A2)
+# Task CRUD API with Containerized PostgreSQL (Week 3 - Assignment A3)
 
-A database-backed RESTful CRUD API that manages a to-do list. This is the persistent sequel to Assignment A1. Instead of storing tasks in-memory, the API is backed by a local SQLite database using the `better-sqlite3` library. The storage layer has been fully migrated to disk, while the API endpoints and response shapes remain identical.
+A database-backed RESTful CRUD API that manages a to-do list, fully containerized using Docker and orchestrated using Docker Compose. This is the persistent sequel to Assignment A2 (SQLite). The storage layer has been migrated to a real PostgreSQL database server running inside its own container with volume persistence.
 
 ---
 
-## Why SQLite was Chosen
+## Architecture Overview
 
-SQLite is a lightweight, relational database management system that operates serverless and with zero configuration. It was chosen for the following reasons:
-1. **Single-File Database**: The entire database is contained within a single file (`tasks.db`) on disk. This makes it trivial to copy, backup, or move the database between environments.
-2. **Zero Configuration Setup**: SQLite runs in-process with the application. There is no external database server process to install, run, configure, or administer.
-3. **Restarts-Safe (Persistence)**: Unlike in-memory storage (RAM), SQLite writes data to disk. The tasks survive restarts, server crashes, and machine reboots.
-4. **Lightweight & Fast**: Being an embedded database library, SQLite has negligible memory and CPU overhead, making it ideal for prototypes, development, and desktop/mobile applications.
+```mermaid
+graph TD
+  Client[Client/cURL/Browser] -->|Port 3000| API[Node.js Express Container]
+  API -->|Port 5432 - depends_on| DB[(PostgreSQL 15 Container)]
+  DB -->|Mounts| Volume[(Docker Volume: taskdata)]
+```
+
+- **Containerized Stack**: The entire application starts with a single command: `docker compose up`.
+- **Seeding & Automation**: The PostgreSQL table schema and indexes are created automatically on startup. If the database is empty, the server automatically seeds it with three default tasks inside an atomic transaction.
+- **Robust Startup Orchestration**: Unlike standard configurations, our Node.js app implements a connection retry mechanism (up to 10 attempts with a 2-second delay) to wait until PostgreSQL is accepting connections, preventing typical `ECONNREFUSED` container boot races.
+- **Volume Persistence**: Data is persisted inside a named Docker volume (`taskdata`) which outlives container lifecycles (`down` and `up`).
 
 ---
 
 ## Getting Started
 
-### 1. Installation
-
-Install all required dependencies (including `better-sqlite3`):
+### 1. Configure the Environment
+Create your local environment file:
 ```bash
-npm install
+cp .env.example .env
 ```
+The `.env` file is git-ignored to prevent database credentials from leaking.
 
-### 2. Run the Server
-
-Start the application:
+### 2. Start the Stack
+Start the database and API server in detached mode:
 ```bash
-npm start
+docker compose up --build -d
 ```
-*(For development with auto-reload, you can run: `npm run dev`)*
 
-The server will automatically boot and initialize the database file:
+To stop the containers:
+```bash
+docker compose down
 ```
-Server running on http://localhost:3000
-```
-On the very first launch, the database file `tasks.db` is created automatically, and a schema containing the `tasks` table is defined. The table is then seeded with three default tasks. Subsequent restarts will read the existing file without duplicating seed tasks.
 
 ---
 
-## Database Schema & File Location
+## Port Mappings & Services
 
-- **Database File**: The database is stored in a file named `tasks.db` in the root of the project.
-- **Git-Ignored**: `tasks.db` is git-ignored (configured in `.gitignore`) to ensure that each cloned repository starts with a fresh local database.
-- **Tables**:
-  - `tasks` table:
-    - `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-    - `title` (TEXT NOT NULL)
-    - `done` (INTEGER DEFAULT 0) - Stores `0` for incomplete and `1` for completed tasks.
-- **Database Indexes**:
-  - `idx_tasks_done` on `tasks(done)` - Speeds up retrieval when filtering by completion status.
-  - `idx_tasks_title` on `tasks(title)` - Optimizes searches by keywords.
+- **API Service (`api`)**: Listens on port `3000`. Built from local `Dockerfile`.
+- **Database Service (`db`)**: Runs on port `5432` inside the network. Powered by `postgres:15` image.
 
 ---
 
-## DB Browser for SQLite Screenshot
+## API Endpoints Guide
 
-Below is a screenshot of our seeded database table open in the DB Browser for SQLite visual program:
-
-![DB Browser Screenshot](./db-browser.png)
-
----
-
-## Manual SQL Inspection (Stage 4)
-
-We inspected `tasks.db` using SQL queries by hand. Below is one query executed during the inspection:
-
-### Query:
-```sql
-SELECT * FROM tasks WHERE done = 1;
-```
-
-### Returned Output:
-```
-2|Read a book|1
-```
-
-### Explanation:
-This query queries the `tasks` table and returns only the rows where the `done` status is `1` (true). In our initial seeded database, this corresponds to the task `"Read a book"`.
+| Method | Endpoint | Description | Query Parameters / Body |
+| :--- | :--- | :--- | :--- |
+| **GET** | `/tasks` | List all tasks | `done=true\|false`, `search=keyword`, `sort=title`, `limit=N`, `offset=M` |
+| **GET** | `/tasks/:id` | Retrieve single task | None |
+| **POST** | `/tasks` | Create a new task | Body: `{"title": "Non-empty string"}` |
+| **PUT** | `/tasks/:id` | Update task fields | Body: `{"title": "New title", "done": true\|false}` (At least one) |
+| **DELETE**| `/tasks/:id` | Delete task by ID | None |
+| **GET** | `/stats` | SQL-calculated stats | None |
+| **POST** | `/reset` | Truncate and re-seed | None |
+| **GET** | `/health` | Check API & DB status | None |
 
 ---
 
-## Implementation Details & Optional Extras
+## Pasted Curl Output
 
-This project implements all the standard stages and the following optional stretch features to deliver a premium backend implementation:
-- **Database Transactions**: Seeding and database resets are wrapped inside SQLite transactions. This guarantees an all-or-nothing operation, preventing partial database updates if a write fails.
-- **Dynamic SQL Filters**: Filtering tasks via `GET /tasks?done=true` or `GET /tasks?search=milk` is executed directly inside SQLite using dynamic query generation (`WHERE done = ?` and `WHERE title LIKE ?`). We do not load rows and filter them in JavaScript loops.
-- **Alphabetical Sorting**: Supports sorting tasks by title using `GET /tasks?sort=title` which translates to SQL `ORDER BY title ASC`.
-- **SQL-Based Statistics**: The `/stats` endpoint aggregates total, done, and open tasks directly in a single SQL query (`SELECT COUNT(*), SUM(...)`) rather than pulling all rows and counting in JavaScript.
-- **Database-Backed Reset**: The `/reset` endpoint truncates the table, resets the primary key autoincrement sequence, and seeds the initial tasks in a transaction.
-- **Pagination Support**: Implements `limit` and `offset` query parameters on `GET /tasks` translated directly to `LIMIT ? OFFSET ?` in SQL.
-- **API Tests Proof**: The endpoint shapes, query parameters, validation rules, and error envelopes (returning `400` / `404`) are identical to Assignment 1. The test suites pass cleanly against both. This demonstrates that the storage layer is an **implementation detail**; clients remain unaffected by the change from RAM to SQLite.
+### Retrieval: `GET /tasks`
+```http
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Content-Type: application/json; charset=utf-8
+Content-Length: 149
+ETag: W/"95-hZYA/H0jz33NQf7sNhbp/YD0YQ0"
+Date: Sun, 02 Aug 2026 10:17:42 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+
+[
+  {"id":1,"title":"Buy groceries","done":false},
+  {"id":2,"title":"Read a book","done":true},
+  {"id":3,"title":"Complete coding assignment","done":false}
+]
+```
+
+---
+
+## Database Screenshot (DBeaver)
+
+Below is a screenshot of our PostgreSQL database table inside DBeaver:
+
+![DBeaver PostgreSQL Screenshot](./db-screenshot.png)
 
 ---
 
 ## AI vs Me (Stage 6 AI Rematch)
 
-To compare human engineering against AI-generated code, we prompted a language model to perform this database migration.
+To compare human engineering against standard AI generation, we prompted an AI assistant to containerize a task CRUD API on Postgres.
 
 ### The AI Prompt Used:
-> Convert my Node.js Express REST API (which currently keeps tasks in-memory) to use a SQLite database via the 'better-sqlite3' library.
-> The database should be saved in a local file named 'tasks.db'. On startup, create the 'tasks' table if it doesn't exist yet. The table should have an auto-incrementing integer 'id' primary key, a 'title' text column, and a 'done' boolean column (represented as 0 or 1 in SQLite).
-> If the table is empty, seed it with three initial tasks: 'Buy groceries' (done: false), 'Read a book' (done: true), and 'Complete coding assignment' (done: false). Make sure seeding only runs when the table is empty, so restarting the server does not add duplicate tasks.
-> The endpoints should behave exactly as they do currently, returning 200/201/204 status codes on success, 400 for bad requests (invalid/missing titles, invalid done status), and 404 for unknown task IDs. Keep identical response JSON shapes, including mapping the integer 'done' column back to a boolean in responses. Always use parameterized queries to prevent SQL injection.
+> Write a Node.js Express REST API that manages a to-do list, backed by a PostgreSQL database using the 'pg' library. Connection parameters should come from a DATABASE_URL environment variable loaded from a git-ignored .env file. On startup, connect using DATABASE_URL, create a table 'tasks' with id serial primary key, title text, and done boolean. Seed with initial tasks if empty. Implement five endpoints for CRUD using parameterized queries. Write a Dockerfile and compose.yaml.
 
 ### Concrete Differences Identified:
 
-| Feature / Detail | Human Code (Our Implementation) | AI Code (`ai-version/index.js`) |
+| Feature / Detail | Human Code (Our Implementation) | AI Code (`ai-version/`) |
 | :--- | :--- | :--- |
-| **Filtering & Search** | Performed directly in the database using SQL `WHERE` clauses (`done = ?`, `title LIKE ?`) and SQLite indexes. | Fetched *all* database records into JavaScript RAM and filtered them using `Array.prototype.filter`. |
-| **Transaction Safety** | Wrapped database seeding and DB resets in SQLite transaction blocks (`db.transaction()`) to ensure atomicity. | Inserted records sequentially without a transaction, risking database corruption or duplicate seeding on partial failures. |
-| **Pagination & Sorting** | Handled `limit` / `offset` and `sort=title` parameters in the SQL query utilizing database-level sorting and pagination. | Omitted pagination and sorting parameters entirely, as they were not explicitly specified in the prompt. |
-| **Endpoint Support** | Fully migrated the `/stats` and `/reset` endpoints to query and modify the SQLite database. | Excluded `/stats` and `/reset` endpoints entirely since they were absent in the brief prompt. |
-| **Performance Tweaks** | Created secondary indexes (`idx_tasks_done`, `idx_tasks_title`) and handled SIGINT cleanly to close connection pool. | Did not add indexes or handle clean database connections termination during process shutdowns. |
+| **Connection Resilience** | Implemented connection retry loops (10 attempts, 2-second sleep). The server waits for PostgreSQL to finish booting. | Connecting directly on startup. The API container crashed with `ECONNREFUSED` if the DB container was not fully booted yet. |
+| **Query Parameters** | Retained complete functionality for pagination, alphabetical sorting, done status filtering, and search keyword matching. | Omitted all sorting, filtering, and pagination parameters because they were not explicitly stated in the prompt. |
+| **Helper Endpoints** | Retained the SQL-aggregated `/stats` endpoint, `/reset` endpoint, and `/health` database check endpoint. | Omitted `/stats`, `/reset`, and `/health` entirely. |
+| **Database Performance** | Added secondary B-tree indexes (`idx_tasks_done`, `idx_tasks_title`) to speed up search filters. | Created the table without any secondary indexes. |
+| **Clean Shutdowns** | Trapped `SIGINT` signals to cleanly end the postgres `pg` pool, avoiding socket leaks. | Did not register signal handlers; killed raw process immediately. |
+| **Container Pinning** | Pinned to a stable image version (`postgres:15`) to avoid directory permissions changes on newer images. | Used `postgres:latest` which caused directory configuration conflicts on version 18+ mounts. |
 
 ### Observations:
-- **What did the prompt forget?** The prompt forgot to specify the preservation of utility endpoints (`/stats`, `/reset`) and advanced API features (pagination, sorting). The AI silently decided to discard them rather than scanning the existing code context to retain them.
-- **Why are database filters superior?** Doing database queries (filtering/sorting) in JS memory is a major scalability hazard. If the table grows to thousands of records, memory usage and execution latency skyrocket. Handling it in SQL ensures we only load what we need, which leverages SQL index lookups.
+- **Specification Blindspot**: The AI implements *exactly* what is in the prompt. It does not think ahead about environment-specific issues like container start latency or production-readiness.
+- **Resilience beats logic**: The core REST endpoints in both versions are logically similar. However, the AI version failed to run out-of-the-box due to connection timing and image versioning issues. Building a correct containerized stack requires proactive failure handling (retries) and explicit configuration.
